@@ -1,0 +1,113 @@
+name: Generate Nutrition Labels
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'data/products.json'
+      - 'templates/**'
+      - 'scripts/**'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      
+    steps:
+    - uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install Typst
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y typst
+        typst --version
+        
+    - name: Create output directories
+      run: |
+        mkdir -p output/typst
+        mkdir -p output/pdf
+        
+    - name: Generate Typst files
+      run: |
+        python scripts/generate_labels.py --all
+        
+    - name: Compile to PDF
+      run: |
+        bash scripts/compile_pdfs.sh
+        
+    - name: List generated PDFs
+      run: |
+        ls -lh output/pdf/
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: nutrition-labels-pdf
+        path: output/pdf/
+        retention-days: 30
+        
+    - name: Check if files changed
+      id: verify
+      run: |
+        if [ -d "output/pdf" ] && [ "$(ls -A output/pdf/)" ]; then
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "Files generated successfully"
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+          echo "No PDF files generated"
+          exit 1
+        fi
+
+  commit:
+    needs: generate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: nutrition-labels-pdf
+        path: output/pdf/
+        
+    - name: Check if PDFs exist
+      run: ls -lh output/pdf/ || echo "No PDFs to commit"
+      
+    - name: Commit PDFs
+      run: |
+        git config --global user.email "action@github.com"
+        git config --global user.name "GitHub Action"
+        git add -A output/pdf/ || true
+        git commit -m "🔄 Auto-generated nutrition labels PDFs" || true
+        git push || true
+
+  notify:
+    needs: [generate]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Build summary
+      run: |
+        echo "## 📋 Nutrition Labels Generation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Status:** ${{ needs.generate.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Downloads" >> $GITHUB_STEP_SUMMARY
+        echo "PDF files available in workflow artifacts" >> $GITHUB_STEP_SUMMARY
